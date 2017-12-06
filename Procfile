@@ -1,1 +1,1 @@
-web: python Facebook_scrapper.py
+web: gunicorn Facebook_scrapper.py
