@@ -62,7 +62,7 @@ def get_all_stats():
 def get_all_posts(pagename):
   dbpage = mongo.db[pagename]
   allposts = dbpage.find()
-  CopComments = mongo.db.CopComments
+  CopComments = mongo.db.coppertonecomments
   allcomments = CopComments.find()
   return render_template('tables.html',allposts=allposts,allcomments=allcomments,pagename=pagename)
 
