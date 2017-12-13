@@ -1,9 +1,10 @@
 # mongo.py
 
-from flask import Flask, render_template
+from flask import Flask, render_template,make_response, Response, redirect
 from flask import jsonify
-from flask import request, send_from_directory
+from flask import request, send_from_directory,url_for
 from flask_pymongo import PyMongo
+from io import StringIO
 import urllib
 from bson import json_util
 from requests.exceptions import HTTPError
@@ -33,14 +34,14 @@ app_id = "1817819741852164"
 app_secret = "b0ec96124ba0807a6093455a86035cc3" # DO NOT SHARE WITH ANYONE!
 
 access_token = app_id + "|" + app_secret
-page_id = 'coppertone'
+page_id = 'neutrogenaUS'
 
 mongo = PyMongo(app)
 
 @app.route('/', methods=['GET'])
 def get_all_stats():
-  Coppertone = mongo.db.Coppertone
-  CopComments = mongo.db.CopComments
+  Coppertone = mongo.db.coppertone
+  CopComments = mongo.db.coppertonecomments
   pipeline = [{ '$group': { '_id': '$comment_author', 'total_comments': { '$sum': 1 } } },
                         { "$sort": { "total_comments": -1 } },
                           { "$limit": 10 }
@@ -57,38 +58,121 @@ def get_all_stats():
 
   return render_template('index.html',topComment = topCommenters,MaxShare = MaxShare, MaxComment = MaxComment, MaxReact = MaxReact,TopComm = topComm)
 
-@app.route('/posts/', methods=['GET'])
-def get_all_posts():
-  Coppertone = mongo.db.Coppertone
-  allposts = Coppertone.find()
+@app.route('/posts/<pagename>', methods=['GET'])
+def get_all_posts(pagename):
+  dbpage = mongo.db[pagename]
+  allposts = dbpage.find()
   CopComments = mongo.db.CopComments
   allcomments = CopComments.find()
-  return render_template('tables.html',allposts=allposts,allcomments=allcomments)
+  return render_template('tables.html',allposts=allposts,allcomments=allcomments,pagename=pagename)
 
-@app.route('/comments/', methods=['GET'])
+def iter_csv(pagename):
+    """ returns (file_basename, server_path, file_size) """
+    dbpage = mongo.db[pagename]
+    allposts = dbpage.find()
+    server_path = app.root_path + '/static/data/'
+    with open(app.root_path + "/static/data/" + "output.csv", "w") as f:
+        writer = csv.writer(f)
+        writer.writerow(["status_id", "status_message", "link_name", "status_type",
+                   "status_link", "status_published", "num_reactions",
+                   "num_comments", "num_shares"])
+        for status in allposts:
+            try:
+                writer.writerow([status["status_id"] ,status["status_message"]  , status["link_name"] , status["status_type"],
+                    status["status_link"] ,status["status_published"].strftime('%Y-%m-%d %H:%M:%S') ,str(status["num_reactions"]),
+                    str(status["num_comments"]),str(status["num_shares"])]) ## row_as_string[1:-1] because row is a tuple
+            except (UnicodeEncodeError, UnicodeDecodeError):
+                 print ("Caught unicode error")
+    w_file = open(server_path+"output.csv",'r')
+    file_size = len(w_file.read())
+    w_file.close()
+    return "output.csv", server_path, file_size
+
+
+
+@app.route('/download/<pagename>', methods=['GET'])
+def get_csv_posts(pagename):
+    (file_basename, server_path, file_size) = iter_csv(pagename)
+    return_file = open(server_path+file_basename, 'r')
+    response = make_response(return_file.read(),200)
+    response.headers['Content-Description'] = 'File Transfer'
+    response.headers['Cache-Control'] = 'no-cache'
+    response.headers['Content-Type'] = 'text/csv'
+    response.headers['Content-Disposition'] = 'attachment; filename=%s' % file_basename
+    response.headers['Content-Length'] = file_size
+    return response
+
+
+@app.route('/load', methods=['GET','POST'])
+def load_data():
+     # read the posted values from the UI
+  if request.method == 'POST':
+    _id = request.form['inputID']
+    _secret = request.form['inputsecret']
+    _page = request.form['inputpage']
+    access_tok = _id + "|" + _secret
+    dbpage = mongo.db[_page]
+    statuses_dict = loads(scrapeFacebookPageFeedStatus(_page, access_tok, since_date, until_date))
+    status_id =[]
+    for status in statuses_dict:
+        status_id.append(dbpage.insert(status))
+    scrapeFacebookPageFeedComments(_page, access_tok)
+    return redirect(url_for('.get_csv_posts', pagename=_page))
+  else:
+    return render_template('forms.html')
+
+"""
+@app.route('/coppertone/comments/', methods=['GET'])
 def get_all_comments():
   CopComments = mongo.db.CopComments
   allcomments = CopComments.find()
   return render_template('comments.html',allcomments=allcomments)
 
+@app.route('/neutrogena/posts/', methods=['GET'])
+def get_all_neuposts():
+  Coppertone = mongo.db.Neutrogena
+  allposts = Coppertone.find()
+  CopComments = mongo.db.NeuComments
+  allcomments = CopComments.find()
+  return render_template('tables.html',allposts=allposts,allcomments=allcomments)
 
+@app.route('/bananaboat/posts/', methods=['GET'])
+def get_all_banposts():
+  Coppertone = mongo.db.Bananaboat
+  allposts = Coppertone.find()
+  CopComments = mongo.db.BanComments
+  allcomments = CopComments.find()
+  return render_template('tables.html',allposts=allposts,allcomments=allcomments)
 
 
 @app.route('/load', methods=['POST'])
 def add_data():
-  Coppertone = mongo.db.Coppertone
-  CopComments = mongo.db.CopComments
-  #statuses_dict = loads(scrapeFacebookPageFeedStatus(page_id, access_token, since_date, until_date))
-  #status_id =[]
-  #for status in statuses_dict:
-  #status_id.append(Coppertone.insert(status))
+  Coppertone = mongo.db.Neutrogena
+  CopComments = mongo.db.NeuComment
+  statuses_dict = loads(scrapeFacebookPageFeedStatus(page_id, access_token, since_date, until_date))
+  status_id =[]
+  for status in statuses_dict:
+   status_id.append(Coppertone.insert(status))
 
-  scrapeFacebookPageFeedComments(page_id, access_token)
+@app.route('/load/<pagename>', methods = ['POST'])
+def add_data(pagename):
+    dbpage = mongo.db[pagename]
+    statuses_dict = loads(scrapeFacebookPageFeedStatus(page_id, access_token, since_date, until_date))
+    status_id =[]
+    for status in statuses_dict:
+      status_id.append(Coppertone.insert(status))
+    scrapeFacebookPageFeedComments(page_id, access_token)
+    return loads(dumps(status_id, indent=4, sort_keys=True, default=str)
 
- #new_status = Coppertone.find_one({'_id': status_id })
- # output =  statuses_dict
- #{'name' : new_star['name'], 'distance' : new_star['distance']}
-  return loads(dumps(status_id, indent=4, sort_keys=True, default=str))
+#statuses_dict = loads(scrapeFacebookPageFeedStatus(page_id, access_token, since_date, until_date))
+#status_id =[]
+#for status in statuses_dict:
+#status_id.append(Coppertone.insert(status))
+#new_status = Coppertone.find_one({'_id': status_id })
+# output =  statuses_dict
+#{'name' : new_star['name'], 'distance' : new_star['distance']
+"""
+
 
 def request_until_succeed(url):
     req = Request(url)
@@ -105,10 +189,8 @@ def request_until_succeed(url):
         except Exception as e:
             print(e)
             time.sleep(5)
-
             print("Error for URL {}: {}".format(url, datetime.datetime.now()))
             print("Retrying.")
-
     return response.read()
 
 # Needed to write tricky unicode correctly to csv
@@ -278,8 +360,9 @@ def scrapeFacebookPageFeedComments(page_id, access_token):
             print("Scraping {} Comments From Posts: {}\n".format(
                 page_id, scrape_starttime))
 
-            Coppertone = mongo.db.Coppertone
-            CopComments = mongo.db.CopComments
+            Coppertone = mongo.db[page_id]
+            _page = page_id +'comments'
+            CopComments = mongo.db[_page]
             cursor = Coppertone.find({},no_cursor_timeout=True)
             fbcomments = []
             # Uncomment below line to scrape comments for a specific status_id
@@ -358,15 +441,15 @@ def scrapeFacebookPageFeedComments(page_id, access_token):
                 num_processed, datetime.datetime.now() - scrape_starttime))
 
 """
-                while has_next_page:
+                    while has_next_page:
 
-                    node = "/{}/comments".format(document["status_id"])
-                    after = '' if after is '' else "&after={}".format(after)
-                    base_url = base + node + parameters
+                        node = "/{}/comments".format(document["status_id"])
+                        after = '' if after is '' else "&after={}".format(after)
+                        base_url = base + node + parameters
 
-                    url = getFacebookCommentFeedUrl(base_url)
+                        url = getFacebookCommentFeedUrl(base_url)
                     # print(url)
-                    comments = json.loads(request_until_succeed(url))
+                        comments = json.loads(request_until_succeed(url))
 
 
                     for comment in comments['data']:
@@ -425,6 +508,7 @@ def scrapeFacebookPageFeedComments(page_id, access_token):
 
             print("\nDone!\n{} Comments Processed in {}".format(
             num_processed, datetime.datetime.now() - scrape_starttime))
-"""
+    """
+
 if __name__ == '__main__':
     app.run(debug=True)
